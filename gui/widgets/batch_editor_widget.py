@@ -1,8 +1,9 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QFileDialog, QMessageBox, QCheckBox, QLabel,
                                QComboBox, QLineEdit, QRadioButton, QButtonGroup,
-                               QGroupBox, QGridLayout, QProgressBar)
-from PySide6.QtCore import Qt, QThread, Signal
+                               QGroupBox, QGridLayout, QProgressBar, QScrollArea,
+                               QDateEdit, QFrame, QSizePolicy, QSpacerItem)
+from PySide6.QtCore import Qt, QThread, Signal, QDate
 from core.metadata_parser import MetadataParser
 from core.legend_renderer import LegendRenderer
 from core.logo_inserter import LogoInserter
@@ -10,11 +11,48 @@ from core.estaca_adjuster import EstacaAdjuster
 from core.exif_writer import ExifWriter
 from gui.widgets.estaca_adjust_widget import EstacaAdjustWidget
 from pathlib import Path
+from datetime import datetime
+
+class DateRuleWidget(QWidget):
+    """Widget representando uma única regra de data."""
+    remove_requested = Signal(object)  # envia a própria instância
+
+    def __init__(self, original_date=None, new_date=None, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        layout.addWidget(QLabel("De:"))
+        self.original_date_edit = QDateEdit()
+        self.original_date_edit.setCalendarPopup(True)
+        self.original_date_edit.setDisplayFormat("dd/MM/yyyy")
+        self.original_date_edit.setDate(original_date if original_date else QDate.currentDate())
+        layout.addWidget(self.original_date_edit)
+
+        layout.addWidget(QLabel("Para:"))
+        self.new_date_edit = QDateEdit()
+        self.new_date_edit.setCalendarPopup(True)
+        self.new_date_edit.setDisplayFormat("dd/MM/yyyy")
+        self.new_date_edit.setDate(new_date if new_date else QDate.currentDate())
+        layout.addWidget(self.new_date_edit)
+
+        self.btn_remove = QPushButton("−")
+        self.btn_remove.setFixedWidth(40)
+        self.btn_remove.setToolTip("Remover regra")
+        self.btn_remove.clicked.connect(lambda: self.remove_requested.emit(self))
+        layout.addWidget(self.btn_remove)
+
+    def get_rule(self):
+        """Retorna a regra como dict com strings no formato dd/mm/yyyy."""
+        orig = self.original_date_edit.date().toString("dd/MM/yyyy")
+        nova = self.new_date_edit.date().toString("dd/MM/yyyy")
+        return {"original": orig, "new": nova}
+
 
 class BatchProcessorThread(QThread):
     """Thread para processamento em lote."""
     progress = Signal(int, int, str)
-    finished = Signal(int, int)
+    finished = Signal(int, int, int)  # sucessos, total, ignorados
     error = Signal(str)
 
     def __init__(self, files, settings, renderer, logo_inserter):
@@ -23,6 +61,7 @@ class BatchProcessorThread(QThread):
         self.settings = settings
         self.renderer = renderer
         self.logo_inserter = logo_inserter
+        self.ignored_count = 0
 
     def run(self):
         success_count = 0
@@ -33,7 +72,6 @@ class BatchProcessorThread(QThread):
                 self.progress.emit(i + 1, total, Path(file_path).name)
 
                 meta = MetadataParser.extract_custom_metadata(file_path)
-
                 if meta is None:
                     meta = {
                         'obra': 'DADO AUSENTE',
@@ -43,6 +81,13 @@ class BatchProcessorThread(QThread):
                         'utm': '20M 000000 0000000',
                         'data': ''
                     }
+
+                # Aplicar regras de data (se estiver no modo regras)
+                if self.settings.get('use_date_rules', False):
+                    meta = self._apply_date_rules(meta)
+                    if meta is None:
+                        self.ignored_count += 1
+                        continue  # pula o arquivo
 
                 final_data = self._apply_overrides(meta)
 
@@ -72,7 +117,29 @@ class BatchProcessorThread(QThread):
             except Exception as e:
                 self.error.emit(f"Erro ao processar {file_path}: {str(e)}")
 
-        self.finished.emit(success_count, total)
+        self.finished.emit(success_count, total, self.ignored_count)
+
+    def _apply_date_rules(self, meta):
+        """Aplica as regras de data. Retorna meta atualizado ou None se deve ignorar."""
+        rules = self.settings.get('date_rules', [])
+        ignore_non_matching = self.settings.get('ignore_non_matching', True)
+
+        original_date_str = meta.get('data', '').strip()
+        # Normalizar formato: assume dd/mm/yyyy
+        if not original_date_str:
+            if ignore_non_matching:
+                return None
+            return meta
+
+        for rule in rules:
+            if original_date_str == rule['original']:
+                meta['data'] = rule['new']
+                return meta
+
+        # Nenhuma regra correspondeu
+        if ignore_non_matching:
+            return None
+        return meta
 
     def _apply_overrides(self, meta):
         final = {
@@ -126,13 +193,13 @@ class BatchProcessorThread(QThread):
 
     def _get_output_path(self, input_path):
         path = Path(input_path)
-        
+
         if self.settings.get('is_main_folder_mode', False):
             new_name = path.stem.replace('CLEAN', 'MODED', 1)
             if 'MODED' not in new_name:
                 new_name = f"{path.stem}_MODED"
             return str(path.with_name(f"{new_name}{path.suffix}"))
-        
+
         output_folder = self.settings.get('output_folder', '')
         prefix = self.settings.get('output_prefix', '_MODED')
 
@@ -153,6 +220,7 @@ class BatchEditorWidget(QWidget):
         self.renderer = renderer
         self.logo_inserter = logo_inserter
         self.processor = processor
+        self.date_rules = []  # lista de DateRuleWidget
 
         self._init_ui()
         self._load_preferences()
@@ -164,7 +232,7 @@ class BatchEditorWidget(QWidget):
         # MODO DE OPERAÇÃO
         mode_group = QGroupBox("Modo de Entrada")
         mode_layout = QVBoxLayout()
-        
+
         mode_row1 = QHBoxLayout()
         self.radio_files = QRadioButton("Selecionar Arquivos Manuais")
         self.radio_folder = QRadioButton("Processar Pasta Inteira")
@@ -174,17 +242,54 @@ class BatchEditorWidget(QWidget):
         self.mode_group.addButton(self.radio_folder)
         mode_row1.addWidget(self.radio_files)
         mode_row1.addWidget(self.radio_folder)
-        
+
         mode_row2 = QHBoxLayout()
         self.radio_main_folder = QRadioButton("Modo Pasta Principal (recursivo)")
         self.mode_group.addButton(self.radio_main_folder)
         mode_row2.addWidget(self.radio_main_folder)
         mode_row2.addWidget(QLabel("Procura arquivos com 'CLEAN' no nome em subpastas"))
-        
+
+        mode_row3 = QHBoxLayout()
+        self.radio_rules = QRadioButton("Modo Regras de Data")
+        self.mode_group.addButton(self.radio_rules)
+        mode_row3.addWidget(self.radio_rules)
+        mode_row3.addWidget(QLabel("Aplica regras de data durante a edição"))
+
         mode_layout.addLayout(mode_row1)
         mode_layout.addLayout(mode_row2)
+        mode_layout.addLayout(mode_row3)
         mode_group.setLayout(mode_layout)
         layout.addWidget(mode_group)
+
+        # ÁREA DE REGRAS DE DATA (visível apenas no modo regras)
+        self.rules_group = QGroupBox("Regras de Data")
+        rules_layout = QVBoxLayout()
+        self.rules_container = QVBoxLayout()
+        self.rules_container.setSpacing(5)
+
+        # Área rolável para as regras
+        self.rules_scroll = QScrollArea()
+        self.rules_scroll.setWidgetResizable(True)
+        self.rules_widget = QWidget()
+        self.rules_widget.setLayout(self.rules_container)
+        self.rules_scroll.setWidget(self.rules_widget)
+        self.rules_scroll.setMinimumHeight(120)
+        self.rules_scroll.setMaximumHeight(220)
+        rules_layout.addWidget(self.rules_scroll)
+
+        # Botão para adicionar regra
+        btn_add_rule = QPushButton("+ Adicionar Regra")
+        btn_add_rule.clicked.connect(self._on_add_rule)
+        rules_layout.addWidget(btn_add_rule, alignment=Qt.AlignLeft)
+
+        # Checkbox ignorar sem correspondência
+        self.check_ignore_non_matching = QCheckBox("Ignorar arquivos sem correspondência de data")
+        self.check_ignore_non_matching.setChecked(True)
+        rules_layout.addWidget(self.check_ignore_non_matching)
+
+        self.rules_group.setLayout(rules_layout)
+        layout.addWidget(self.rules_group)
+        self.rules_group.setVisible(False)  # oculto por padrão
 
         # VISIBILIDADE GERAL
         visibility_group = QGroupBox("Visibilidade Geral")
@@ -301,18 +406,39 @@ class BatchEditorWidget(QWidget):
         self.radio_files.toggled.connect(self._on_mode_changed)
         self.radio_folder.toggled.connect(self._on_mode_changed)
         self.radio_main_folder.toggled.connect(self._on_mode_changed)
+        self.radio_rules.toggled.connect(self._on_mode_changed)
 
         self.btn_select.clicked.connect(self._on_select_files)
         self.btn_select_output.clicked.connect(self._on_select_output)
         self.btn_process.clicked.connect(self._on_process)
 
     def _on_mode_changed(self):
+        # Atualiza texto do botão conforme o modo
         if self.radio_files.isChecked():
             self.btn_select.setText("Selecionar Arquivos...")
         elif self.radio_main_folder.isChecked():
             self.btn_select.setText("Selecionar Pasta Principal...")
+        elif self.radio_rules.isChecked():
+            self.btn_select.setText("Selecionar Pasta Principal...")
         else:
             self.btn_select.setText("Selecionar Pasta...")
+
+        # Mostra/esconde a área de regras
+        self.rules_group.setVisible(self.radio_rules.isChecked())
+
+    def _on_add_rule(self):
+        """Adiciona uma nova linha de regra de data."""
+        rule_widget = DateRuleWidget()
+        rule_widget.remove_requested.connect(self._on_remove_rule)
+        self.rules_container.addWidget(rule_widget)
+        self.date_rules.append(rule_widget)
+
+    def _on_remove_rule(self, widget):
+        """Remove uma regra de data."""
+        if widget in self.date_rules:
+            self.date_rules.remove(widget)
+            self.rules_container.removeWidget(widget)
+            widget.deleteLater()
 
     def _on_select_files(self):
         if self.radio_files.isChecked():
@@ -323,8 +449,8 @@ class BatchEditorWidget(QWidget):
             if files:
                 self.selected_files = files
                 self.lbl_selection.setText(f"{len(files)} arquivo(s) selecionado(s)")
-        
-        elif self.radio_main_folder.isChecked():
+
+        elif self.radio_main_folder.isChecked() or self.radio_rules.isChecked():
             folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta Principal")
             if folder:
                 self.selected_files = self._find_clean_files_recursive(folder)
@@ -333,7 +459,7 @@ class BatchEditorWidget(QWidget):
                     f"Pasta Principal: {folder}\n"
                     f"Encontrados: {len(self.selected_files)} arquivos com 'CLEAN'"
                 )
-        
+
         else:
             folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Entrada")
             if folder:
@@ -348,13 +474,11 @@ class BatchEditorWidget(QWidget):
         extensions = ['.jpg', '.jpeg', '.png', '.tif', '.tiff']
         clean_files = []
         folder_path = Path(folder)
-        
         for file_path in folder_path.rglob('*'):
             if file_path.is_file():
                 if file_path.suffix.lower() in extensions:
                     if 'CLEAN' in file_path.stem.upper():
                         clean_files.append(str(file_path))
-        
         return clean_files
 
     def _on_select_output(self):
@@ -383,7 +507,10 @@ class BatchEditorWidget(QWidget):
             'override_data': self.edit_data.text(),
             'output_folder': self.edit_output_folder.text(),
             'output_prefix': '_MODED',
-            'is_main_folder_mode': self.radio_main_folder.isChecked()
+            'is_main_folder_mode': self.radio_main_folder.isChecked(),
+            'use_date_rules': self.radio_rules.isChecked(),
+            'date_rules': [w.get_rule() for w in self.date_rules],
+            'ignore_non_matching': self.check_ignore_non_matching.isChecked()
         }
 
         self._save_preferences(settings)
@@ -406,14 +533,12 @@ class BatchEditorWidget(QWidget):
         self.progress_bar.setValue(current)
         self.lbl_selection.setText(f"Processando {current}/{total}: {filename}")
 
-    def _on_finished(self, success_count, total):
+    def _on_finished(self, success_count, total, ignored_count):
         self.progress_bar.setVisible(False)
         self.btn_process.setEnabled(True)
-        self.lbl_selection.setText(f"Concluído: {success_count}/{total} imagens processadas")
-        QMessageBox.information(
-            self, "Processamento Concluído",
-            f"Total processado: {success_count} de {total} imagens."
-        )
+        msg = f"Processadas: {success_count}/{total}\nIgnoradas: {ignored_count}"
+        self.lbl_selection.setText(msg)
+        QMessageBox.information(self, "Processamento Concluído", msg)
 
     def _on_error(self, error_msg):
         QMessageBox.warning(self, "Erro", error_msg)
@@ -426,32 +551,45 @@ class BatchEditorWidget(QWidget):
         if prefs:
             self.check_logo.setChecked(prefs.get('apply_logo', True))
             self.check_date.setChecked(prefs.get('show_date', True))
-            
+
             if prefs.get('override_obra_enabled', False):
                 self.check_override_obra.setChecked(True)
                 idx = self.combo_obra.findText(prefs.get('override_obra', ''))
                 if idx >= 0:
                     self.combo_obra.setCurrentIndex(idx)
-            
+
             if prefs.get('override_estaca_enabled', False):
                 self.check_override_estaca.setChecked(True)
                 self.edit_estaca.setText(prefs.get('override_estaca', ''))
-            
+
             if prefs.get('override_lado_enabled', False):
                 self.check_override_lado.setChecked(True)
                 idx = self.combo_lado.findText(prefs.get('override_lado', ''))
                 if idx >= 0:
                     self.combo_lado.setCurrentIndex(idx)
-            
+
             if prefs.get('override_servico_enabled', False):
                 self.check_override_servico.setChecked(True)
                 idx = self.combo_servico.findText(prefs.get('override_servico', ''))
                 if idx >= 0:
                     self.combo_servico.setCurrentIndex(idx)
-            
+
             if prefs.get('override_data_enabled', False):
                 self.check_override_data.setChecked(True)
                 self.edit_data.setText(prefs.get('override_data', ''))
-            
+
             if prefs.get('output_folder', ''):
                 self.edit_output_folder.setText(prefs.get('output_folder', ''))
+
+            # Restaurar regras de data, se existirem
+            rules = prefs.get('date_rules', [])
+            for rule in rules:
+                orig = QDate.fromString(rule['original'], "dd/MM/yyyy")
+                nova = QDate.fromString(rule['new'], "dd/MM/yyyy")
+                self._on_add_rule()
+                w = self.date_rules[-1]
+                w.original_date_edit.setDate(orig)
+                w.new_date_edit.setDate(nova)
+
+            if prefs.get('use_date_rules', False):
+                self.radio_rules.setChecked(True)
