@@ -6,22 +6,37 @@ class ExifWriter:
     """Grava metadados EXIF UserComment nas imagens processadas."""
 
     @staticmethod
-    def copy_exif_from_source(source_path, dest_path):
+    def copy_exif_from_source(source_path, dest_path, reset_orientation=False):
         """Copia todo o EXIF do arquivo fonte para o destino."""
         try:
-            exif_dict = piexif.load(source_path)
+            try:
+                exif_dict = piexif.load(str(source_path))
+            except:
+                exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
             if not exif_dict:
-                return False
+                exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
             
+            if reset_orientation:
+                if "0th" not in exif_dict:
+                    exif_dict["0th"] = {}
+                exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+                exif_dict["0th"][piexif.ImageIFD.ImageWidth] = 1440
+                exif_dict["0th"][piexif.ImageIFD.ImageLength] = 1080
+                if "Exif" not in exif_dict:
+                    exif_dict["Exif"] = {}
+                exif_dict["Exif"][piexif.ExifIFD.PixelXDimension] = 1440
+                exif_dict["Exif"][piexif.ExifIFD.PixelYDimension] = 1080
+
             exif_bytes = piexif.dump(exif_dict)
-            img = Image.open(dest_path)
+            img = Image.open(str(dest_path))
             
             if img.mode == 'RGBA':
                 rgb_img = Image.new('RGB', img.size, (255, 255, 255))
                 rgb_img.paste(img, mask=img.split()[3])
                 img = rgb_img
             
-            img.save(dest_path, "jpeg", exif=exif_bytes, quality=95)
+            img.save(str(dest_path), "jpeg", exif=exif_bytes, quality=95)
             return True
         except:
             return False
@@ -71,16 +86,16 @@ class ExifWriter:
         )
 
     @staticmethod
-    def preserve_original_exif(source_path, dest_path):
+    def preserve_original_exif(source_path, dest_path, reset_orientation=False):
         """Copia o EXIF original para o arquivo de saída."""
-        if ExifWriter.copy_exif_from_source(source_path, dest_path):
+        if ExifWriter.copy_exif_from_source(source_path, dest_path, reset_orientation=reset_orientation):
             return True
         
         try:
             from core.metadata_parser import MetadataParser
-            meta = MetadataParser.extract_custom_metadata(source_path)
+            meta = MetadataParser.extract_custom_metadata(str(source_path))
             if meta:
-                return ExifWriter.update_user_comment_from_metadata(dest_path, meta)
+                return ExifWriter.update_user_comment_from_metadata(str(dest_path), meta)
         except:
             pass
         

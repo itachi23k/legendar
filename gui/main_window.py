@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QMessageBox
 from gui.widgets.individual_editor_widget import IndividualEditorWidget
 from gui.widgets.batch_editor_widget import BatchEditorWidget
+from gui.widgets.camera_correction_widget import CameraCorrectionWidget
 from core.config_manager import ConfigManager
 from core.file_processor import FileProcessor
 from core.legend_renderer import LegendRenderer
@@ -11,7 +12,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Gerador de Legendas LCM")
-        self.resize(1000, 750)
+        self.resize(1180, 780)
+        self.setMinimumSize(950, 650)
 
         self.config = ConfigManager()
 
@@ -41,9 +43,13 @@ class MainWindow(QMainWindow):
         self.batch_editor = BatchEditorWidget(
             self.config, self.renderer, self.logo_inserter, self.processor
         )
+        self.camera_correction = CameraCorrectionWidget(
+            self.config, self.renderer, self.logo_inserter, self.processor
+        )
 
         self.tab_widget.addTab(self.individual_editor, "Edição Individual")
         self.tab_widget.addTab(self.batch_editor, "Edição em Lote")
+        self.tab_widget.addTab(self.camera_correction, "Correção de Câmera")
 
         self.setCentralWidget(self.tab_widget)
         self.statusBar().showMessage("Pronto")

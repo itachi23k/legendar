@@ -10,44 +10,9 @@ from core.logo_inserter import LogoInserter
 from core.estaca_adjuster import EstacaAdjuster
 from core.exif_writer import ExifWriter
 from gui.widgets.estaca_adjust_widget import EstacaAdjustWidget
+from gui.dialogs.date_rules_dialog import DateRulesDialog
 from pathlib import Path
 from datetime import datetime
-
-class DateRuleWidget(QWidget):
-    """Widget representando uma única regra de data."""
-    remove_requested = Signal(object)  # envia a própria instância
-
-    def __init__(self, original_date=None, new_date=None, parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        layout.addWidget(QLabel("De:"))
-        self.original_date_edit = QDateEdit()
-        self.original_date_edit.setCalendarPopup(True)
-        self.original_date_edit.setDisplayFormat("dd/MM/yyyy")
-        self.original_date_edit.setDate(original_date if original_date else QDate.currentDate())
-        layout.addWidget(self.original_date_edit)
-
-        layout.addWidget(QLabel("Para:"))
-        self.new_date_edit = QDateEdit()
-        self.new_date_edit.setCalendarPopup(True)
-        self.new_date_edit.setDisplayFormat("dd/MM/yyyy")
-        self.new_date_edit.setDate(new_date if new_date else QDate.currentDate())
-        layout.addWidget(self.new_date_edit)
-
-        self.btn_remove = QPushButton("−")
-        self.btn_remove.setFixedWidth(40)
-        self.btn_remove.setToolTip("Remover regra")
-        self.btn_remove.clicked.connect(lambda: self.remove_requested.emit(self))
-        layout.addWidget(self.btn_remove)
-
-    def get_rule(self):
-        """Retorna a regra como dict com strings no formato dd/mm/yyyy."""
-        orig = self.original_date_edit.date().toString("dd/MM/yyyy")
-        nova = self.new_date_edit.date().toString("dd/MM/yyyy")
-        return {"original": orig, "new": nova}
-
 
 class BatchProcessorThread(QThread):
     """Thread para processamento em lote."""
@@ -98,16 +63,23 @@ class BatchProcessorThread(QThread):
                     )
 
                 legend_text = self._build_legend_text(final_data)
-                output_path = self._get_output_path(file_path)
+                output_path = self._get_output_path(file_path, final_data)
+
+                rotate_and_stretch = self.settings.get('rotate_and_stretch', False)
+                target_size = self.settings.get('target_size', (1440, 1080))
 
                 if self.settings.get('apply_logo', False) and self.logo_inserter.logo_exists():
                     success = LogoInserter.composite_logo_and_legend(
                         file_path, output_path, self.logo_inserter,
-                        self.renderer, legend_text, "Araboto-Normal"
+                        self.renderer, legend_text, "Araboto-Normal",
+                        rotate_and_stretch=rotate_and_stretch,
+                        target_size=target_size
                     )
                 else:
                     success = self.renderer.render(
-                        file_path, output_path, legend_text, "Araboto-Normal"
+                        file_path, output_path, legend_text, "Araboto-Normal",
+                        rotate_and_stretch=rotate_and_stretch,
+                        target_size=target_size
                     )
 
                 if success:
@@ -133,7 +105,13 @@ class BatchProcessorThread(QThread):
 
         for rule in rules:
             if original_date_str == rule['original']:
-                meta['data'] = rule['new']
+                action = rule.get('action', 'alterar')
+                if action == 'omitir':
+                    meta['data'] = ''
+                    meta['omit_date'] = True
+                else:
+                    meta['data'] = rule['new']
+                    meta['omit_date'] = False
                 return meta
 
         # Nenhuma regra correspondeu
@@ -148,7 +126,8 @@ class BatchProcessorThread(QThread):
             'estaca': meta.get('estaca', '0'),
             'lado': meta.get('lado', '-'),
             'utm': meta.get('utm', '20M 000000 0000000'),
-            'data': meta.get('data', '')
+            'data': meta.get('data', ''),
+            'omit_date': meta.get('omit_date', False)
         }
 
         if self.settings.get('override_obra_enabled', False):
@@ -171,11 +150,14 @@ class BatchProcessorThread(QThread):
 
         if self.settings.get('override_data_enabled', False):
             final['data'] = self.settings.get('override_data', '')
+            final['omit_date'] = False
 
         return final
 
     def _build_legend_text(self, data):
         show_date = self.settings.get('show_date', True)
+        if data.get('omit_date', False):
+            show_date = False
 
         lines = [
             data['utm'],
@@ -188,20 +170,41 @@ class BatchProcessorThread(QThread):
 
         if show_date:
             lines.append(data['data'] if data['data'] else " ")
+        else:
+            lines.append(" ")
 
         return "\r".join(lines)
 
-    def _get_output_path(self, input_path):
+    def _get_output_path(self, input_path, final_data=None):
         path = Path(input_path)
+        show_date = self.settings.get('show_date', True)
+        if final_data and final_data.get('omit_date', False):
+            show_date = False
+
+        is_rot = self.settings.get('rotate_and_stretch', False)
 
         if self.settings.get('is_main_folder_mode', False):
-            new_name = path.stem.replace('CLEAN', 'MODED', 1)
-            if 'MODED' not in new_name:
-                new_name = f"{path.stem}_MODED"
+            if is_rot:
+                replace_to = 'MODED_ROT' if show_date else 'MODED_ROT_SD'
+            else:
+                replace_to = 'MODED' if show_date else 'MODED_SD'
+            new_name = path.stem.replace('CLEAN', replace_to, 1)
+            if replace_to not in new_name:
+                new_name = f"{path.stem}_{replace_to}"
             return str(path.with_name(f"{new_name}{path.suffix}"))
 
         output_folder = self.settings.get('output_folder', '')
-        prefix = self.settings.get('output_prefix', '_MODED')
+
+        if self.settings.get('use_date_rules', False):
+            if is_rot:
+                prefix = '_REG_ROT' if show_date else '_REG_ROT_SD'
+            else:
+                prefix = '_REG' if show_date else '_REG_SD'
+        else:
+            if is_rot:
+                prefix = '_LOTE_ROT' if show_date else '_LOTE_ROT_SD'
+            else:
+                prefix = '_LOTE' if show_date else '_LOTE_SD'
 
         if output_folder:
             out_dir = Path(output_folder)
@@ -214,13 +217,18 @@ class BatchProcessorThread(QThread):
 class BatchEditorWidget(QWidget):
     """Aba para edição em lote."""
 
-    def __init__(self, config, renderer, logo_inserter, processor):
+    def __init__(self, config, renderer, logo_inserter, processor,
+                 rotate_and_stretch=False, target_size=(1440, 1080)):
         super().__init__()
         self.config = config
         self.renderer = renderer
         self.logo_inserter = logo_inserter
         self.processor = processor
-        self.date_rules = []  # lista de DateRuleWidget
+        self.rotate_and_stretch = rotate_and_stretch
+        self.target_size = target_size
+        self.pref_key = 'batch_camera_preferences' if rotate_and_stretch else 'batch_preferences'
+        self.date_rules = []
+        self.ignore_non_matching = True
 
         self._init_ui()
         self._load_preferences()
@@ -261,31 +269,14 @@ class BatchEditorWidget(QWidget):
         mode_group.setLayout(mode_layout)
         layout.addWidget(mode_group)
 
-        # ÁREA DE REGRAS DE DATA (visível apenas no modo regras)
+        # CONFIGURAÇÃO DE REGRAS DE DATA
         self.rules_group = QGroupBox("Regras de Data")
         rules_layout = QVBoxLayout()
-        self.rules_container = QVBoxLayout()
-        self.rules_container.setSpacing(5)
-
-        # Área rolável para as regras
-        self.rules_scroll = QScrollArea()
-        self.rules_scroll.setWidgetResizable(True)
-        self.rules_widget = QWidget()
-        self.rules_widget.setLayout(self.rules_container)
-        self.rules_scroll.setWidget(self.rules_widget)
-        self.rules_scroll.setMinimumHeight(120)
-        self.rules_scroll.setMaximumHeight(220)
-        rules_layout.addWidget(self.rules_scroll)
-
-        # Botão para adicionar regra
-        btn_add_rule = QPushButton("+ Adicionar Regra")
-        btn_add_rule.clicked.connect(self._on_add_rule)
-        rules_layout.addWidget(btn_add_rule, alignment=Qt.AlignLeft)
-
-        # Checkbox ignorar sem correspondência
-        self.check_ignore_non_matching = QCheckBox("Ignorar arquivos sem correspondência de data")
-        self.check_ignore_non_matching.setChecked(True)
-        rules_layout.addWidget(self.check_ignore_non_matching)
+        self.lbl_rules = QLabel("Nenhuma regra configurada")
+        self.btn_configure_rules = QPushButton("Configurar regras de data...")
+        self.btn_configure_rules.clicked.connect(self._open_date_rules_dialog)
+        rules_layout.addWidget(self.lbl_rules)
+        rules_layout.addWidget(self.btn_configure_rules, alignment=Qt.AlignLeft)
 
         self.rules_group.setLayout(rules_layout)
         layout.addWidget(self.rules_group)
@@ -344,7 +335,7 @@ class BatchEditorWidget(QWidget):
             "EROSÃO", "ESTOQUE DE MATERIAL", "EXECUÇÃO DE BUEIRO",
             "EXECUÇÃO DE PONTILHÃO", "FAIXA DE DOMÍNIO", "HIDROSSEMEADURA",
             "IMPLANTAÇÃO DE PLACAS", "IMPRIMAÇÃO", "LANÇAMENTO DE BGS",
-            "LASTRO DE BRITA", "LIMPEZA DE SARJETA", "LIMPEZA DE VALA DE DRENAGEM",
+            "LASTRO DE BRITA", "LASTRO DE AREIA", "LIMPEZA DE SARJETA", "LIMPEZA DE VALA DE DRENAGEM",
             "PATRULHA DE EQUIPAMENTOS", "PINTURA DE LIGAÇÃO", "PLANTIO DE GRAMA",
             "PONTE DE MADEIRA", "RECOMPOSIÇÃO MECANIZADA DE ATERRO",
             "REFORMA DE PONTE", "REGULARIZAÇÃO DE SUBLEITO", "REMENDO PROFUNDO",
@@ -426,19 +417,29 @@ class BatchEditorWidget(QWidget):
         # Mostra/esconde a área de regras
         self.rules_group.setVisible(self.radio_rules.isChecked())
 
-    def _on_add_rule(self):
-        """Adiciona uma nova linha de regra de data."""
-        rule_widget = DateRuleWidget()
-        rule_widget.remove_requested.connect(self._on_remove_rule)
-        self.rules_container.addWidget(rule_widget)
-        self.date_rules.append(rule_widget)
+    def _open_date_rules_dialog(self):
+        dialog = DateRulesDialog(
+            self,
+            initial_rules=self.date_rules,
+            ignore_non_matching=self.ignore_non_matching
+        )
+        if dialog.exec():
+            settings = dialog.get_settings()
+            self.date_rules = settings['date_rules']
+            self.ignore_non_matching = settings['ignore_non_matching']
+            self._update_rules_summary()
 
-    def _on_remove_rule(self, widget):
-        """Remove uma regra de data."""
-        if widget in self.date_rules:
-            self.date_rules.remove(widget)
-            self.rules_container.removeWidget(widget)
-            widget.deleteLater()
+    def _update_rules_summary(self):
+        if not self.date_rules:
+            self.lbl_rules.setText("Nenhuma regra configurada")
+            return
+
+        omitted = sum(rule.get('action') == 'omitir' for rule in self.date_rules)
+        altered = len(self.date_rules) - omitted
+        self.lbl_rules.setText(
+            f"{len(self.date_rules)} regra(s): {altered} alteração(ões), "
+            f"{omitted} omissão(ões)"
+        )
 
     def _on_select_files(self):
         if self.radio_files.isChecked():
@@ -509,8 +510,10 @@ class BatchEditorWidget(QWidget):
             'output_prefix': '_MODED',
             'is_main_folder_mode': self.radio_main_folder.isChecked(),
             'use_date_rules': self.radio_rules.isChecked(),
-            'date_rules': [w.get_rule() for w in self.date_rules],
-            'ignore_non_matching': self.check_ignore_non_matching.isChecked()
+            'date_rules': self.date_rules,
+            'ignore_non_matching': self.ignore_non_matching,
+            'rotate_and_stretch': self.rotate_and_stretch,
+            'target_size': self.target_size
         }
 
         self._save_preferences(settings)
@@ -544,10 +547,12 @@ class BatchEditorWidget(QWidget):
         QMessageBox.warning(self, "Erro", error_msg)
 
     def _save_preferences(self, settings):
-        self.config.set('batch_preferences', settings)
+        self.config.set(self.pref_key, settings)
 
     def _load_preferences(self):
-        prefs = self.config.get('batch_preferences', None)
+        prefs = self.config.get(self.pref_key, None)
+        if not prefs and self.rotate_and_stretch:
+            prefs = self.config.get('batch_preferences', None)
         if prefs:
             self.check_logo.setChecked(prefs.get('apply_logo', True))
             self.check_date.setChecked(prefs.get('show_date', True))
@@ -581,15 +586,9 @@ class BatchEditorWidget(QWidget):
             if prefs.get('output_folder', ''):
                 self.edit_output_folder.setText(prefs.get('output_folder', ''))
 
-            # Restaurar regras de data, se existirem
-            rules = prefs.get('date_rules', [])
-            for rule in rules:
-                orig = QDate.fromString(rule['original'], "dd/MM/yyyy")
-                nova = QDate.fromString(rule['new'], "dd/MM/yyyy")
-                self._on_add_rule()
-                w = self.date_rules[-1]
-                w.original_date_edit.setDate(orig)
-                w.new_date_edit.setDate(nova)
+            self.date_rules = prefs.get('date_rules', [])
+            self.ignore_non_matching = prefs.get('ignore_non_matching', True)
+            self._update_rules_summary()
 
             if prefs.get('use_date_rules', False):
                 self.radio_rules.setChecked(True)

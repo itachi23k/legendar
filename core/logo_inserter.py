@@ -1,4 +1,4 @@
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QImage, QPainter, QTransform
 from PySide6.QtCore import Qt
 from pathlib import Path
 from core.exif_writer import ExifWriter
@@ -16,13 +16,9 @@ class LogoInserter:
     def logo_exists(self):
         return self.logo_image is not None and not self.logo_image.isNull()
 
-    def insert_logo(self, image_path, output_path):
-        """Insere a logo na imagem."""
-        if not self.logo_exists():
-            return False
-
-        img = QImage(image_path)
-        if img.isNull():
+    def apply_logo_to_image(self, img: QImage) -> bool:
+        """Desenha a logo diretamente em uma instância de QImage existente."""
+        if not self.logo_exists() or img.isNull():
             return False
 
         doc_w = img.width()
@@ -55,36 +51,60 @@ class LogoInserter:
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.drawImage(x_pos, y_pos, scaled_logo)
         painter.end()
+        return True
 
-        success = img.save(output_path)
+    def insert_logo(self, image_path, output_path, rotate_and_stretch=False, target_size=(1440, 1080)):
+        """Insere a logo na imagem."""
+        if not self.logo_exists():
+            return False
+
+        img = QImage(str(image_path))
+        if img.isNull():
+            return False
+
+        if rotate_and_stretch:
+            img = img.transformed(QTransform().rotate(-90), Qt.SmoothTransformation)
+            target_w, target_h = target_size
+            img = img.scaled(target_w, target_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+        success = self.apply_logo_to_image(img)
+        if not success:
+            return False
+
+        saved = img.save(str(output_path))
         
-        if success:
+        if saved:
             try:
-                ExifWriter.preserve_original_exif(image_path, output_path)
+                ExifWriter.preserve_original_exif(image_path, output_path, reset_orientation=rotate_and_stretch)
             except:
                 pass
         
-        return success
+        return saved
 
     @staticmethod
-    def composite_logo_and_legend(image_path, output_path, logo_inserter, legend_renderer, text, font_name):
+    def composite_logo_and_legend(image_path, output_path, logo_inserter, legend_renderer,
+                                  text, font_name,
+                                  rotate_and_stretch=False, target_size=(1440, 1080)):
         """Combina logo e legenda em uma única operação."""
-        temp_path = output_path + ".temp.png"
-        
-        if logo_inserter.logo_exists():
-            if not logo_inserter.insert_logo(image_path, temp_path):
-                temp_path = image_path
-        else:
-            temp_path = image_path
+        img = QImage(str(image_path))
+        if img.isNull():
+            return False
 
-        success = legend_renderer.render(temp_path, output_path, text, font_name)
+        if rotate_and_stretch:
+            img = img.transformed(QTransform().rotate(-90), Qt.SmoothTransformation)
+            target_w, target_h = target_size
+            img = img.scaled(target_w, target_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
-        if temp_path != image_path and Path(temp_path).exists():
-            Path(temp_path).unlink()
+        if logo_inserter and logo_inserter.logo_exists():
+            logo_inserter.apply_logo_to_image(img)
+
+        legend_renderer.apply_legend_to_image(img, text, font_name)
+
+        success = img.save(str(output_path))
 
         if success:
             try:
-                ExifWriter.preserve_original_exif(image_path, output_path)
+                ExifWriter.preserve_original_exif(image_path, output_path, reset_orientation=rotate_and_stretch)
             except:
                 pass
 

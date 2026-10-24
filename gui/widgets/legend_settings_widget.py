@@ -34,7 +34,7 @@ class LegendSettingsWidget(QWidget):
             "EROSÃO", "ESTOQUE DE MATERIAL", "EXECUÇÃO DE BUEIRO",
             "EXECUÇÃO DE PONTILHÃO", "FAIXA DE DOMÍNIO", "HIDROSSEMEADURA",
             "IMPLANTAÇÃO DE PLACAS", "IMPRIMAÇÃO", "LANÇAMENTO DE BGS",
-            "LASTRO DE BRITA", "LIMPEZA DE SARJETA", "LIMPEZA DE VALA DE DRENAGEM",
+            "LASTRO DE BRITA", "LASTRO DE AREIA", "LIMPEZA DE SARJETA", "LIMPEZA DE VALA DE DRENAGEM",
             "PATRULHA DE EQUIPAMENTOS", "PINTURA DE LIGAÇÃO", "PLANTIO DE GRAMA",
             "PONTE DE MADEIRA", "RECOMPOSIÇÃO MECANIZADA DE ATERRO",
             "REFORMA DE PONTE", "REGULARIZAÇÃO DE SUBLEITO", "REMENDO PROFUNDO",
@@ -161,6 +161,105 @@ class LegendSettingsWidget(QWidget):
         self.edit_obs.setPlainText(self.config.get("obs", ""))
 
     def _emit_data_changed(self):
+        if not getattr(self, '_is_updating', False):
+            self.data_changed.emit()
+
+    def clear_fields(self):
+        self._is_updating = True
+        try:
+            self.edit_utm.clear()
+            self.edit_estaca.clear()
+            self.estaca_adjust.set_adjustment(0)
+            self.edit_dia.clear()
+            self.combo_mes.setCurrentIndex(0)
+            self.edit_ano.clear()
+            self.edit_obs.clear()
+            self.combo_obra.setCurrentIndex(self.config.get("obra_idx", 0))
+            self.combo_servico.setCurrentIndex(self.config.get("servico_idx", 0))
+            lado_default = self.config.get("lado", "D")
+            idx_lado = self.combo_lado.findText(lado_default)
+            if idx_lado >= 0:
+                self.combo_lado.setCurrentIndex(idx_lado)
+            else:
+                self.combo_lado.setCurrentIndex(0)
+            self.check_data.setChecked(self.config.get("show_date", True))
+        finally:
+            self._is_updating = False
+        self.data_changed.emit()
+
+    def get_data(self) -> dict:
+        return {
+            "obra_idx": self.combo_obra.currentIndex(),
+            "obra_text": self.combo_obra.currentText(),
+            "servico_idx": self.combo_servico.currentIndex(),
+            "servico_text": self.combo_servico.currentText(),
+            "utm": self.edit_utm.text(),
+            "estaca": self.edit_estaca.text(),
+            "lado_idx": self.combo_lado.currentIndex(),
+            "lado_text": self.combo_lado.currentText(),
+            "estaca_adjust": self.estaca_adjust.get_adjustment(),
+            "dia": self.edit_dia.text(),
+            "mes_idx": self.combo_mes.currentIndex(),
+            "ano": self.edit_ano.text(),
+            "show_date": self.check_data.isChecked(),
+            "obs": self.edit_obs.toPlainText(),
+            "fonte_idx": self.combo_fonte.currentIndex(),
+            "fonte_text": self.combo_fonte.currentText()
+        }
+
+    def set_data(self, data: dict):
+        if not data:
+            self.clear_fields()
+            return
+
+        self._is_updating = True
+        try:
+            if "obra_idx" in data and 0 <= data["obra_idx"] < self.combo_obra.count():
+                self.combo_obra.setCurrentIndex(data["obra_idx"])
+            elif "obra_text" in data:
+                idx = self.combo_obra.findText(data["obra_text"])
+                if idx >= 0:
+                    self.combo_obra.setCurrentIndex(idx)
+
+            if "servico_idx" in data and 0 <= data["servico_idx"] < self.combo_servico.count():
+                self.combo_servico.setCurrentIndex(data["servico_idx"])
+            elif "servico_text" in data:
+                idx = self.combo_servico.findText(data["servico_text"])
+                if idx >= 0:
+                    self.combo_servico.setCurrentIndex(idx)
+
+            self.edit_utm.setText(data.get("utm", ""))
+            self.edit_estaca.setText(data.get("estaca", ""))
+
+            if "lado_idx" in data and 0 <= data["lado_idx"] < self.combo_lado.count():
+                self.combo_lado.setCurrentIndex(data["lado_idx"])
+            elif "lado_text" in data:
+                idx = self.combo_lado.findText(data["lado_text"])
+                if idx >= 0:
+                    self.combo_lado.setCurrentIndex(idx)
+
+            self.estaca_adjust.set_adjustment(data.get("estaca_adjust", 0))
+            self.edit_dia.setText(data.get("dia", ""))
+
+            if "mes_idx" in data and 0 <= data["mes_idx"] < self.combo_mes.count():
+                self.combo_mes.setCurrentIndex(data["mes_idx"])
+
+            self.edit_ano.setText(data.get("ano", ""))
+
+            if "show_date" in data:
+                self.check_data.setChecked(bool(data["show_date"]))
+
+            self.edit_obs.setPlainText(data.get("obs", ""))
+
+            if "fonte_idx" in data and 0 <= data["fonte_idx"] < self.combo_fonte.count():
+                self.combo_fonte.setCurrentIndex(data["fonte_idx"])
+            elif "fonte_text" in data:
+                idx = self.combo_fonte.findText(data["fonte_text"])
+                if idx >= 0:
+                    self.combo_fonte.setCurrentIndex(idx)
+        finally:
+            self._is_updating = False
+
         self.data_changed.emit()
 
     def _on_buscar_utm(self):
@@ -192,76 +291,123 @@ class LegendSettingsWidget(QWidget):
 
     def fill_from_metadata(self, meta: dict):
         if not meta:
+            self.clear_fields()
             return
 
-        obra = meta.get("obra", "").upper()
-        idx = self.combo_obra.findText(obra)
-        if idx >= 0:
-            self.combo_obra.setCurrentIndex(idx)
+        self._is_updating = True
+        try:
+            # Limpa campos dinâmicos previamente para não reter lixo de fotos anteriores
+            self.edit_utm.clear()
+            self.edit_estaca.clear()
+            self.estaca_adjust.set_adjustment(0)
+            self.edit_dia.clear()
+            self.combo_mes.setCurrentIndex(0)
+            self.edit_ano.clear()
+            self.edit_obs.clear()
 
-        servico = meta.get("servico", "").upper()
-        idx = self.combo_servico.findText(servico)
-        if idx < 0:
-            for i in range(self.combo_servico.count()):
-                item_text = self.combo_servico.itemText(i).upper()
-                if item_text in servico or servico in item_text:
-                    idx = i
-                    break
-        if idx >= 0:
-            self.combo_servico.setCurrentIndex(idx)
+            obra = meta.get("obra", "").upper()
+            idx = self.combo_obra.findText(obra)
+            if idx >= 0:
+                self.combo_obra.setCurrentIndex(idx)
+            else:
+                self.combo_obra.setCurrentIndex(self.config.get("obra_idx", 0))
 
-        self.edit_estaca.setText(meta.get("estaca", ""))
+            servico = meta.get("servico", "").upper()
+            idx = self.combo_servico.findText(servico)
+            if idx < 0:
+                for i in range(self.combo_servico.count()):
+                    item_text = self.combo_servico.itemText(i).upper()
+                    if item_text in servico or servico in item_text:
+                        idx = i
+                        break
+            if idx >= 0:
+                self.combo_servico.setCurrentIndex(idx)
+            else:
+                self.combo_servico.setCurrentIndex(self.config.get("servico_idx", 0))
 
-        lado = meta.get("lado", "").upper()
-        idx = self.combo_lado.findText(lado)
-        if idx >= 0:
-            self.combo_lado.setCurrentIndex(idx)
+            self.edit_estaca.setText(meta.get("estaca", ""))
 
-        self.edit_utm.setText(meta.get("utm", ""))
+            lado = meta.get("lado", "").upper()
+            idx = self.combo_lado.findText(lado)
+            if idx >= 0:
+                self.combo_lado.setCurrentIndex(idx)
+            else:
+                idx_lado = self.combo_lado.findText(self.config.get("lado", "D"))
+                if idx_lado >= 0:
+                    self.combo_lado.setCurrentIndex(idx_lado)
 
-        data = meta.get("data", "")
-        partes = data.split("/")
-        if len(partes) == 3:
-            self.edit_dia.setText(partes[0])
-            try:
-                mes = int(partes[1]) - 1
-                if 0 <= mes < 12:
-                    self.combo_mes.setCurrentIndex(mes)
-            except ValueError:
-                pass
-            self.edit_ano.setText(partes[2])
+            self.edit_utm.setText(meta.get("utm", ""))
+
+            data = meta.get("data", "")
+            partes = data.split("/")
+            if len(partes) == 3:
+                self.edit_dia.setText(partes[0].strip())
+                try:
+                    mes = int(partes[1]) - 1
+                    if 0 <= mes < 12:
+                        self.combo_mes.setCurrentIndex(mes)
+                except ValueError:
+                    pass
+                self.edit_ano.setText(partes[2].strip())
+
+            if meta.get("extra"):
+                self.edit_obs.setPlainText(meta.get("extra"))
+        finally:
+            self._is_updating = False
 
         self.data_changed.emit()
 
     def get_estaca_adjustment(self):
         return self.estaca_adjust.get_adjustment()
 
-    def build_legend_text(self):
-        linha_coord = self.edit_utm.text()
-        
-        estaca_original = self.edit_estaca.text()
-        ajuste = self.get_estaca_adjustment()
-        estaca_final = EstacaAdjuster.apply_adjustment_to_text(estaca_original, ajuste)
-        
-        if self.check_data.isChecked():
-            linha_data = f"{self.edit_dia.text()}/{self.combo_mes.currentText()}/{self.edit_ano.text()}"
+    def build_legend_text(self, data: dict = None):
+        if data is not None:
+            linha_coord = data.get("utm", "")
+            estaca_orig = data.get("estaca", "")
+            ajuste = data.get("estaca_adjust", 0)
+            estaca_final = EstacaAdjuster.apply_adjustment_to_text(estaca_orig, ajuste)
+
+            show_date = data.get("show_date", True)
+            if show_date:
+                mes_idx = data.get("mes_idx", 0)
+                mes_str = f"{mes_idx + 1:02d}"
+                linha_data = f"{data.get('dia', '')}/{mes_str}/{data.get('ano', '')}"
+            else:
+                linha_data = " "
+
+            obra = data.get("obra_text", "")
+            lado = data.get("lado_text", "")
+            servico = data.get("servico_text", "")
+            obs = data.get("obs", "").strip()
         else:
-            linha_data = " "
-        
+            linha_coord = self.edit_utm.text()
+            estaca_original = self.edit_estaca.text()
+            ajuste = self.get_estaca_adjustment()
+            estaca_final = EstacaAdjuster.apply_adjustment_to_text(estaca_original, ajuste)
+
+            if self.check_data.isChecked():
+                linha_data = f"{self.edit_dia.text()}/{self.combo_mes.currentText()}/{self.edit_ano.text()}"
+            else:
+                linha_data = " "
+
+            obra = self.combo_obra.currentText()
+            lado = self.combo_lado.currentText()
+            servico = self.combo_servico.currentText()
+            obs = self.edit_obs.toPlainText().strip()
+
         texto = (
             linha_coord + "\r"
             "BR-319/AM\r"
-            f"{self.combo_obra.currentText()}\r"
+            f"{obra}\r"
             f"ESTACA: {estaca_final}\r"
-            f"LADO: {self.combo_lado.currentText()}\r"
-            f"SERVIÇO: {self.combo_servico.currentText()}\r"
+            f"LADO: {lado}\r"
+            f"SERVIÇO: {servico}\r"
             f"{linha_data}"
         )
-        
-        obs = self.edit_obs.toPlainText().strip()
+
         if obs:
             texto += "\r" + obs
-        
+
         return texto
 
     def get_selected_font(self):

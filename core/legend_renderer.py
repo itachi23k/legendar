@@ -1,4 +1,4 @@
-from PySide6.QtGui import QImage, QPainter, QFont, QColor, QFontMetrics
+from PySide6.QtGui import QImage, QPainter, QFont, QColor, QFontMetrics, QTransform
 from PySide6.QtCore import Qt, QPointF
 from core.font_manager import FontManager
 from core.exif_writer import ExifWriter
@@ -17,11 +17,10 @@ class LegendRenderer:
         self.default_font = default_font
         self.preserve_exif = preserve_exif
 
-    def render(self, image_path, output_path, text, font_name=None,
-               color=(255, 255, 255), shadow_color=(0, 0, 0, 128),
-               shadow_offset_factor=0.002):
-        """Carrega a imagem, desenha o texto e salva."""
-        img = QImage(image_path)
+    def apply_legend_to_image(self, img: QImage, text, font_name=None,
+                              color=(255, 255, 255), shadow_color=(0, 0, 0, 128),
+                              shadow_offset_factor=0.002):
+        """Desenha o texto com sombra diretamente em uma instância de QImage."""
         if img.isNull():
             return False
 
@@ -72,12 +71,31 @@ class LegendRenderer:
             painter.drawText(QPointF(x_text, baseline_y), line)
 
         painter.end()
+        return True
+
+    def render(self, image_path, output_path, text, font_name=None,
+               color=(255, 255, 255), shadow_color=(0, 0, 0, 128),
+               shadow_offset_factor=0.002,
+               rotate_and_stretch=False, target_size=(1440, 1080)):
+        """Carrega a imagem, desenha o texto e salva."""
+        img = QImage(str(image_path))
+        if img.isNull():
+            return False
+
+        if rotate_and_stretch:
+            # 1. Girar 90 graus à esquerda (anti-horário = -90 graus)
+            img = img.transformed(QTransform().rotate(-90), Qt.SmoothTransformation)
+            # 2. Esticar para target_size (ex: 1440x1080)
+            target_w, target_h = target_size
+            img = img.scaled(target_w, target_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+        self.apply_legend_to_image(img, text, font_name, color, shadow_color, shadow_offset_factor)
         
-        success = img.save(output_path)
+        success = img.save(str(output_path))
         
         if success and self.preserve_exif:
             try:
-                ExifWriter.preserve_original_exif(image_path, output_path)
+                ExifWriter.preserve_original_exif(image_path, output_path, reset_orientation=rotate_and_stretch)
             except:
                 pass
         
