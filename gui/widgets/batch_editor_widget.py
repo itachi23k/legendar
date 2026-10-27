@@ -183,6 +183,8 @@ class BatchProcessorThread(QThread):
 
         is_rot = self.settings.get('rotate_and_stretch', False)
 
+        output_folder = self.settings.get('output_folder', '')
+
         if self.settings.get('is_main_folder_mode', False):
             if is_rot:
                 replace_to = 'MODED_ROT' if show_date else 'MODED_ROT_SD'
@@ -191,9 +193,12 @@ class BatchProcessorThread(QThread):
             new_name = path.stem.replace('CLEAN', replace_to, 1)
             if replace_to not in new_name:
                 new_name = f"{path.stem}_{replace_to}"
+            if output_folder:
+                out_dir = Path(output_folder)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                return str(out_dir / f"{new_name}{path.suffix}")
             return str(path.with_name(f"{new_name}{path.suffix}"))
 
-        output_folder = self.settings.get('output_folder', '')
 
         if self.settings.get('use_date_rules', False):
             if is_rot:
@@ -369,9 +374,23 @@ class BatchEditorWidget(QWidget):
         # PASTA DE SAÍDA
         output_group = QGroupBox("Pasta de Saída")
         output_layout = QHBoxLayout()
+
+        self.btn_pin_output = QPushButton("📌")
+        self.btn_pin_output.setCheckable(True)
+        self.btn_pin_output.setFixedWidth(32)
+        self.btn_pin_output.setToolTip(
+            "Salvar na pasta de origem (padrão)\n"
+            "Clique para definir uma pasta de saída diferente"
+        )
+
         self.edit_output_folder = QLineEdit()
-        self.edit_output_folder.setPlaceholderText("Pasta de destino (opcional)")
+        self.edit_output_folder.setPlaceholderText("Mesma pasta de origem de cada foto")
+        self.edit_output_folder.setEnabled(False)
+
         self.btn_select_output = QPushButton("Selecionar...")
+        self.btn_select_output.setEnabled(False)
+
+        output_layout.addWidget(self.btn_pin_output)
         output_layout.addWidget(self.edit_output_folder)
         output_layout.addWidget(self.btn_select_output)
         output_group.setLayout(output_layout)
@@ -400,6 +419,7 @@ class BatchEditorWidget(QWidget):
         self.radio_rules.toggled.connect(self._on_mode_changed)
 
         self.btn_select.clicked.connect(self._on_select_files)
+        self.btn_pin_output.toggled.connect(self._on_pin_toggled)
         self.btn_select_output.clicked.connect(self._on_select_output)
         self.btn_process.clicked.connect(self._on_process)
 
@@ -482,6 +502,22 @@ class BatchEditorWidget(QWidget):
                         clean_files.append(str(file_path))
         return clean_files
 
+    def _on_pin_toggled(self, checked):
+        """Habilita/desabilita a seleção de pasta de saída personalizada."""
+        self.edit_output_folder.setEnabled(checked)
+        self.btn_select_output.setEnabled(checked)
+        if checked:
+            self.btn_pin_output.setToolTip(
+                "Pasta de saída personalizada ativada\n"
+                "Clique para voltar ao padrão (mesma pasta de origem)"
+            )
+        else:
+            self.edit_output_folder.clear()
+            self.btn_pin_output.setToolTip(
+                "Salvar na pasta de origem (padrão)\n"
+                "Clique para definir uma pasta de saída diferente"
+            )
+
     def _on_select_output(self):
         folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Saída")
         if folder:
@@ -506,7 +542,7 @@ class BatchEditorWidget(QWidget):
             'override_servico': self.combo_servico.currentText(),
             'override_data_enabled': self.check_override_data.isChecked(),
             'override_data': self.edit_data.text(),
-            'output_folder': self.edit_output_folder.text(),
+            'output_folder': self.edit_output_folder.text() if self.btn_pin_output.isChecked() else '',
             'output_prefix': '_MODED',
             'is_main_folder_mode': self.radio_main_folder.isChecked(),
             'use_date_rules': self.radio_rules.isChecked(),
@@ -547,6 +583,7 @@ class BatchEditorWidget(QWidget):
         QMessageBox.warning(self, "Erro", error_msg)
 
     def _save_preferences(self, settings):
+        settings['pin_output_active'] = self.btn_pin_output.isChecked()
         self.config.set(self.pref_key, settings)
 
     def _load_preferences(self):
@@ -583,8 +620,10 @@ class BatchEditorWidget(QWidget):
                 self.check_override_data.setChecked(True)
                 self.edit_data.setText(prefs.get('override_data', ''))
 
-            if prefs.get('output_folder', ''):
-                self.edit_output_folder.setText(prefs.get('output_folder', ''))
+            if prefs.get('pin_output_active', False):
+                self.btn_pin_output.setChecked(True)  # triggers _on_pin_toggled
+                if prefs.get('output_folder', ''):
+                    self.edit_output_folder.setText(prefs.get('output_folder', ''))
 
             self.date_rules = prefs.get('date_rules', [])
             self.ignore_non_matching = prefs.get('ignore_non_matching', True)
